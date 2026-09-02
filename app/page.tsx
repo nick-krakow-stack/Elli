@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { HandwritingInput } from "@/app/handwriting-input";
 import {
   Select,
   SelectContent,
@@ -48,6 +49,13 @@ type TriangleQuestion = {
 type Question = MathQuestion | TriangleQuestion;
 type FieldStatus = "right" | "wrong" | null;
 type Feedback = "right" | "wrong" | "incomplete" | null;
+type HandwritingTarget =
+  | { kind: "math" }
+  | {
+      kind: "triangle";
+      area: "inside" | "outside";
+      index: number;
+    };
 
 const seed: Task[] = [
   {
@@ -541,6 +549,20 @@ function useVisualViewport() {
   return viewport;
 }
 
+function useCoarsePointer() {
+  const [coarsePointer, setCoarsePointer] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia("(hover: none) and (pointer: coarse)");
+    const update = () => setCoarsePointer(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  return coarsePointer;
+}
+
 function Student({
   tasks,
   results,
@@ -628,6 +650,8 @@ function TriangleBoard({
   onFocus,
   onBlur,
   onChange,
+  handwriting,
+  onHandwriting,
 }: {
   question: TriangleQuestion;
   values: { inside: string[]; outside: string[] };
@@ -640,6 +664,8 @@ function TriangleBoard({
     index: number,
     value: string,
   ) => void;
+  handwriting: boolean;
+  onHandwriting: (area: "inside" | "outside", index: number) => void;
 }) {
   const insidePos = [
     { left: "50%", top: "34%" },
@@ -716,6 +742,17 @@ function TriangleBoard({
           >
             {number}
           </span>
+        ) : handwriting ? (
+          <button
+            key={`inside-${index}`}
+            type="button"
+            onClick={() => onHandwriting("inside", index)}
+            aria-label={`Fehlende innere Zahl ${index + 1} schreiben`}
+            className={`absolute z-10 size-12 -translate-x-1/2 -translate-y-1/2 rounded-xl border p-0 text-center text-lg font-semibold shadow-none transition-colors ${fieldClass(statuses.inside[index])}`}
+            style={fieldStyle(statuses.inside[index], insidePos[index])}
+          >
+            {values.inside[index]}
+          </button>
         ) : (
           <Input
             key={`inside-${index}`}
@@ -745,6 +782,17 @@ function TriangleBoard({
           >
             {number}
           </span>
+        ) : handwriting ? (
+          <button
+            key={`outside-${index}`}
+            type="button"
+            onClick={() => onHandwriting("outside", index)}
+            aria-label={`Fehlende äußere Zahl ${index + 1} schreiben`}
+            className={`absolute z-10 size-12 -translate-x-1/2 -translate-y-1/2 rounded-lg border p-0 text-center text-lg font-semibold shadow-none transition-colors ${fieldClass(statuses.outside[index])}`}
+            style={fieldStyle(statuses.outside[index], outsidePos[index])}
+          >
+            {values.outside[index]}
+          </button>
         ) : (
           <Input
             key={`outside-${index}`}
@@ -793,7 +841,10 @@ function Practice({
     outside: [null, null, null],
   });
   const [editing, setEditing] = useState(false);
+  const [handwritingTarget, setHandwritingTarget] =
+    useState<HandwritingTarget | null>(null);
   const viewport = useVisualViewport();
+  const coarsePointer = useCoarsePointer();
   const current = result ?? { done: 0, correct: 0 };
   const finished = current.correct >= task.goal;
   const percentage = Math.min(100, (current.correct / task.goal) * 100);
@@ -898,3 +949,270 @@ function Practice({
       inside: [null, null, null],
       outside: [null, null, null],
     });
+    setFeedback(null);
+    setEditing(false);
+    setHandwritingTarget(null);
+  }
+
+  function handwritingValue() {
+    if (!handwritingTarget) return "";
+    if (handwritingTarget.kind === "math") return input;
+    return triangleValues[handwritingTarget.area][handwritingTarget.index];
+  }
+
+  function acceptHandwriting(value: string) {
+    if (!handwritingTarget) return;
+    if (handwritingTarget.kind === "math") {
+      setInput(value);
+      return;
+    }
+    changeTriangleValue(
+      handwritingTarget.area,
+      handwritingTarget.index,
+      value,
+    );
+  }
+
+  if (finished)
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#f5f7ff] p-5 text-[#17203b]">
+        <div className="w-full max-w-lg rounded-[2rem] bg-white p-9 text-center shadow-xl">
+          <div className="mx-auto grid size-24 place-items-center rounded-full bg-[#dff8ee] text-[#13845c]">
+            <Check size={48} strokeWidth={3} />
+          </div>
+          <h1 className="mt-7 text-4xl font-black">Geschafft!</h1>
+          <p className="mt-3 text-lg text-[#626b86]">
+            Du hast {task.goal} Aufgaben richtig gelöst.
+          </p>
+          <Button
+            onClick={back}
+            className="mt-8 h-12 rounded-xl bg-[#5b4ce6] px-8 font-bold"
+          >
+            Zur Übersicht
+          </Button>
+        </div>
+      </main>
+    );
+
+  return (
+    <main
+      className="fixed inset-x-0 top-0 overflow-hidden bg-[#5b4ce6] text-[#17203b]"
+      style={{
+        height: viewport.height ? `${viewport.height}px` : "100dvh",
+        transform: viewport.offsetTop
+          ? `translateY(${viewport.offsetTop}px)`
+          : undefined,
+      }}
+    >
+      <div className="mx-auto flex h-full max-w-3xl flex-col px-3 sm:px-5">
+        <div
+          className={`flex shrink-0 items-center justify-between text-white transition-all ${
+            compact ? "py-1" : "py-4 sm:py-5"
+          }`}
+        >
+          <Button
+            variant="ghost"
+            onClick={back}
+            className="text-white hover:bg-white/10 hover:text-white"
+          >
+            ← Beenden
+          </Button>
+          <span className="font-bold">
+            {current.correct} von {task.goal}
+          </span>
+        </div>
+        <Progress
+          value={percentage}
+          className={`shrink-0 bg-white/25 transition-all ${
+            compact ? "mb-2 h-1.5" : "mb-5 h-3 sm:mb-8"
+          }`}
+        />
+        <section
+          className={`flex min-h-0 flex-1 flex-col overflow-y-auto bg-white shadow-2xl transition-all ${
+            compact
+              ? "rounded-t-3xl px-4 py-3"
+              : "mb-4 rounded-[2rem] p-5 sm:mb-5 sm:p-10"
+          }`}
+        >
+          <p
+            className={`text-center font-extrabold uppercase text-[#7c849f] transition-all ${
+              compact
+                ? "text-xs tracking-[.12em]"
+                : "text-sm tracking-[.18em]"
+            }`}
+          >
+            {task.title}
+          </p>
+          {question.kind === "math" ? (
+            <div className="flex min-h-0 flex-1 flex-col justify-center">
+              <h1
+                className={`text-center font-black tracking-tight transition-all ${
+                  compact
+                    ? "my-2 text-5xl"
+                    : "my-10 text-6xl sm:my-12 sm:text-7xl"
+                }`}
+              >
+                {question.label} = ?
+              </h1>
+              <form
+                id="practice-form"
+                onSubmit={answer}
+                className="mx-auto w-full max-w-sm"
+              >
+                {coarsePointer ? (
+                  <button
+                    type="button"
+                    onClick={() => setHandwritingTarget({ kind: "math" })}
+                    disabled={!!feedback}
+                    aria-label="Antwort mit der Hand schreiben"
+                    className={`w-full rounded-2xl border-2 border-[#dfe3f4] bg-white text-center text-2xl font-bold transition-all disabled:opacity-60 ${
+                      compact ? "h-14" : "h-16"
+                    }`}
+                  >
+                    {input || (
+                      <span className="text-base font-medium text-[#8b93aa]">
+                        Antwort schreiben
+                      </span>
+                    )}
+                  </button>
+                ) : (
+                  <Input
+                    inputMode="numeric"
+                    enterKeyHint="done"
+                    value={input}
+                    onChange={(event) => setInput(event.target.value)}
+                    onFocus={() => setEditing(true)}
+                    onBlur={() => setEditing(false)}
+                    disabled={!!feedback}
+                    aria-label="Deine Antwort"
+                    placeholder="Deine Antwort"
+                    className={`rounded-2xl border-2 text-center text-2xl font-bold transition-all ${
+                      compact ? "h-14" : "h-16"
+                    }`}
+                  />
+                )}
+                {!feedback && (
+                  <Button
+                    className={`mt-3 w-full rounded-2xl bg-[#5b4ce6] text-lg font-bold transition-all ${
+                      compact ? "h-12" : "h-14"
+                    }`}
+                  >
+                    Prüfen
+                  </Button>
+                )}
+              </form>
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col justify-center">
+              <p
+                className={`text-center font-semibold text-[#626b86] ${
+                  compact ? "mt-1 text-sm" : "mt-3"
+                }`}
+              >
+                Fülle die drei freien Felder aus.
+              </p>
+              <TriangleBoard
+                question={question}
+                values={triangleValues}
+                statuses={triangleStatuses}
+                compact={compact}
+                onFocus={() => setEditing(true)}
+                onBlur={() => setEditing(false)}
+                onChange={changeTriangleValue}
+                handwriting={coarsePointer}
+                onHandwriting={(area, index) =>
+                  setHandwritingTarget({ kind: "triangle", area, index })
+                }
+              />
+              <form
+                id="practice-form"
+                onSubmit={answer}
+                className="mx-auto w-full max-w-sm"
+              >
+                {!feedback && (
+                  <Button
+                    className={`w-full rounded-2xl bg-[#5b4ce6] text-lg font-bold transition-all ${
+                      compact ? "mt-0 h-11" : "mt-4 h-14"
+                    }`}
+                  >
+                    Prüfen
+                  </Button>
+                )}
+              </form>
+            </div>
+          )}
+          {feedback && (
+            <div
+              className={`mx-auto mt-5 max-w-sm rounded-2xl p-5 ${
+                feedback === "right"
+                  ? "bg-[#dff8ee] text-[#086b48]"
+                  : feedback === "incomplete"
+                    ? "bg-amber-50 text-amber-800"
+                    : "bg-red-50 text-red-700"
+              }`}
+            >
+              <p className="flex items-center gap-2 text-lg font-black">
+                {feedback === "right" ? (
+                  <Check />
+                ) : feedback === "wrong" ? (
+                  <X />
+                ) : (
+                  <Target />
+                )}
+                {feedback === "right"
+                  ? question.kind === "triangle"
+                    ? "Alles richtig!"
+                    : "Richtig!"
+                  : feedback === "incomplete"
+                    ? "Da fehlt noch etwas."
+                    : "Noch nicht ganz."}
+              </p>
+              <p className="mt-1 font-medium">
+                {feedback === "right"
+                  ? question.kind === "triangle"
+                    ? "Du hast das ganze Rechendreieck gelöst."
+                    : "Stark gemacht."
+                  : feedback === "incomplete"
+                    ? "Fülle zuerst alle freien Felder aus."
+                    : question.kind === "triangle"
+                      ? "Schau dir die roten Felder noch einmal an."
+                      : `Die richtige Antwort ist ${question.answer}.`}
+              </p>
+              <Button
+                onClick={() => {
+                  if (question.kind === "triangle" && feedback !== "right")
+                    setFeedback(null);
+                  else next();
+                }}
+                className={`mt-4 h-12 w-full rounded-xl font-bold ${
+                  feedback === "right"
+                    ? "bg-[#13845c] hover:bg-[#0d6f4c]"
+                    : feedback === "incomplete"
+                      ? "bg-amber-600 hover:bg-amber-700"
+                      : "bg-red-600 hover:bg-red-700"
+                }`}
+              >
+                {question.kind === "triangle" && feedback !== "right"
+                  ? feedback === "incomplete"
+                    ? "Weiter ausfüllen"
+                    : "Antworten verbessern"
+                  : "Nächste Aufgabe"}{" "}
+                <ChevronRight className="ml-1" />
+              </Button>
+            </div>
+          )}
+        </section>
+      </div>
+      {handwritingTarget && (
+        <HandwritingInput
+          open
+          initialValue={handwritingValue()}
+          onOpenChange={(open) => {
+            if (!open) setHandwritingTarget(null);
+          }}
+          onSubmit={acceptHandwriting}
+        />
+      )}
+    </main>
+  );
+}
