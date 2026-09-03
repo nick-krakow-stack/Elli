@@ -20,9 +20,19 @@ import { classifyDigit } from "@/lib/digit-model";
 type HandwritingInputProps = {
   open: boolean;
   initialValue?: string;
+  minValue?: number;
+  maxValue?: number;
   onOpenChange: (open: boolean) => void;
   onSubmit: (value: string) => void;
 };
+
+type InkPoint = { x: number; y: number; t: number; p: number };
+type InkStroke = {
+  id: string;
+  pointerType: string;
+  pointers: InkPoint[];
+};
+type RecognitionMode = "idle" | "recognizing" | "myscript" | "local";
 
 type ColumnRun = { start: number; end: number };
 type DigitBounds = {
@@ -37,6 +47,7 @@ type DigitBounds = {
 const CANVAS_WIDTH = 720;
 const CANVAS_HEIGHT = 320;
 const SAME_DIGIT_GAP = 10;
+const RECOGNITION_DELAY = 620;
 
 function inkAt(data: Uint8ClampedArray, width: number, x: number, y: number) {
   return data[(y * width + x) * 4 + 3] > 18;
@@ -270,14 +281,26 @@ function recognizeDigit(
 export function HandwritingInput({
   open,
   initialValue = "",
+  minValue = 0,
+  maxValue = 99,
   onOpenChange,
   onSubmit,
 }: HandwritingInputProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawing = useRef(false);
   const recognizeTimer = useRef<number | null>(null);
+  const strokes = useRef<InkStroke[]>([]);
+  const activeStroke = useRef<InkStroke | null>(null);
+  const writingStartedAt = useRef<number | null>(null);
+  const recognitionRequest = useRef(0);
+  const myScriptAvailability = useRef<"unknown" | "available" | "missing">(
+    "unknown",
+  );
   const [value, setValue] = useState(initialValue);
   const [hasInk, setHasInk] = useState(false);
+  const [alternatives, setAlternatives] = useState<string[]>([]);
+  const [recognitionMode, setRecognitionMode] =
+    useState<RecognitionMode>("idle");
 
   useEffect(
     () => () => {
@@ -289,6 +312,7 @@ export function HandwritingInput({
   );
 
   function clearWriting(keepValue = false) {
+    recognitionRequest.current += 1;
     if (recognizeTimer.current !== null) {
       window.clearTimeout(recognizeTimer.current);
       recognizeTimer.current = null;
@@ -296,29 +320,121 @@ export function HandwritingInput({
     canvasRef.current
       ?.getContext("2d")
       ?.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    strokes.current = [];
+    activeStroke.current = null;
+    writingStartedAt.current = null;
     setHasInk(false);
+    setAlternatives([]);
+    setRecognitionMode("idle");
     if (!keepValue) setValue("");
   }
 
-  function recognize() {
+  function recognizeLocally() {
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
-    if (!canvas || !context) return;
+    if (!canvas || !context) return "";
     const image = context.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     const runs = findRuns(image.data, image.width, image.height);
-    if (!runs.length) return;
-    const recognized = runs
+    if (!runs.length) return "";
+    return runs
       .map((run) => recognizeDigit(canvas, image, run))
-      .join("");
-    setValue(recognized.replace(/^0+(?=\d)/, ""));
+      .join("")
+      .replace(/^0+(?=\d)/, "");
   }
 
-  function point(event: ReactPointerEvent<HTMLCanvasElement>) {
-    const canvas = event.currentTarget;
+  function applyLocalRecognition(requestId: number) {
+    if (requestId !== recognitionRequest.current) return;
+    const recognized = recognizeLocally();
+    setValue(recognized);
+    setAlternatives([]);
+    setRecognitionMode("local");
+  }
+
+  async function recognize() {
+    if (!strokes.current.length) return;
+    const requestId = recognitionRequest.current + 1;
+    recognitionRequest.current = requestId;
+
+    if (myScriptAvailability.current === "missing") {
+      applyLocalRecognition(requestId);
+      return;
+    }
+
+    setRecognitionMode("recognizing");
+    setValue("");
+    setAlternatives([]);
+
+    const capturedStrokes = strokes.current.map((stroke) => ({
+      ...stroke,
+      pointers: stroke.pointers.map((pointer) => ({ ...pointer })),
+    }));
+
+    try {
+      const response = await fetch("/api/handwriting", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          strokes: capturedStrokes,
+          minValue,
+          maxValue,
+        }),
+      });
+
+      if (response.status === 503) {
+        myScriptAvailability.current = "missing";
+        applyLocalRecognition(requestId);
+        return;
+      }
+      if (!response.ok) throw new Error("Handwriting recognition failed");
+
+      const result = (await response.json()) as {
+        value?: string;
+        candidates?: string[];
+      };
+      if (requestId !== recognitionRequest.current) return;
+
+      const recognized = result.value?.trim() ?? "";
+      if (!recognized) {
+        applyLocalRecognition(requestId);
+        return;
+      }
+
+      myScriptAvailability.current = "available";
+      setValue(recognized);
+      setAlternatives(
+        (result.candidates ?? [])
+          .filter((candidate) => candidate !== recognized)
+          .slice(0, 3),
+      );
+      setRecognitionMode("myscript");
+    } catch {
+      applyLocalRecognition(requestId);
+    }
+  }
+
+  function pointFromClient(
+    canvas: HTMLCanvasElement,
+    clientX: number,
+    clientY: number,
+  ) {
     const rect = canvas.getBoundingClientRect();
     return {
-      x: ((event.clientX - rect.left) / rect.width) * CANVAS_WIDTH,
-      y: ((event.clientY - rect.top) / rect.height) * CANVAS_HEIGHT,
+      x: ((clientX - rect.left) / rect.width) * CANVAS_WIDTH,
+      y: ((clientY - rect.top) / rect.height) * CANVAS_HEIGHT,
+    };
+  }
+
+  function inkPoint(
+    canvas: HTMLCanvasElement,
+    event: PointerEvent | ReactPointerEvent<HTMLCanvasElement>,
+  ): InkPoint {
+    const current = pointFromClient(canvas, event.clientX, event.clientY);
+    const timestamp = Number(event.timeStamp);
+    writingStartedAt.current ??= timestamp;
+    return {
+      ...current,
+      t: Math.max(0, Math.round(timestamp - writingStartedAt.current)),
+      p: event.pressure > 0 ? event.pressure : 0.5,
     };
   }
 
@@ -330,10 +446,20 @@ export function HandwritingInput({
       recognizeTimer.current = null;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
-    const current = point(event);
+    const current = inkPoint(event.currentTarget, event);
     drawing.current = true;
     setHasInk(true);
     setValue("");
+    setAlternatives([]);
+    setRecognitionMode("idle");
+    activeStroke.current = {
+      id:
+        typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `stroke-${strokes.current.length}-${current.t}`,
+      pointerType: event.pointerType || "touch",
+      pointers: [current],
+    };
     context.beginPath();
     context.moveTo(current.x, current.y);
     context.strokeStyle = "#333c59";
@@ -346,19 +472,28 @@ export function HandwritingInput({
     if (!drawing.current) return;
     const context = event.currentTarget.getContext("2d");
     if (!context) return;
-    const current = point(event);
-    context.lineTo(current.x, current.y);
-    context.stroke();
+    const coalesced = event.nativeEvent.getCoalescedEvents?.() ?? [event.nativeEvent];
+    coalesced.forEach((pointerEvent) => {
+      const current = inkPoint(event.currentTarget, pointerEvent);
+      activeStroke.current?.pointers.push(current);
+      context.lineTo(current.x, current.y);
+      context.stroke();
+    });
   }
 
   function finishDrawing(event: ReactPointerEvent<HTMLCanvasElement>) {
     if (!drawing.current) return;
+    continueDrawing(event);
     drawing.current = false;
-    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (activeStroke.current) strokes.current.push(activeStroke.current);
+    activeStroke.current = null;
     recognizeTimer.current = window.setTimeout(() => {
       recognizeTimer.current = null;
-      recognize();
-    }, 360);
+      void recognize();
+    }, RECOGNITION_DELAY);
   }
 
   function typeDigit(digit: number) {
@@ -423,12 +558,40 @@ export function HandwritingInput({
 
           <div className="mt-3 flex min-h-14 items-center justify-between rounded-2xl bg-[#f5f7ff] px-4">
             <span className="text-sm font-bold text-[#737c98]">
-              {hasInk ? "Elli erkennt:" : "Erkannte Zahl:"}
+              {recognitionMode === "recognizing"
+                ? "Elli schaut genau …"
+                : hasInk
+                  ? "Elli erkennt:"
+                  : "Erkannte Zahl:"}
             </span>
             <span className="text-3xl font-black text-[#17203b]">
-              {value || "–"}
+              {recognitionMode === "recognizing" ? "…" : value || "–"}
             </span>
           </div>
+
+          {alternatives.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              <span className="text-sm font-semibold text-[#737c98]">
+                Oder meinst du:
+              </span>
+              {alternatives.map((candidate) => (
+                <button
+                  key={candidate}
+                  type="button"
+                  onClick={() => {
+                    recognitionRequest.current += 1;
+                    setValue(candidate);
+                    setAlternatives((current) =>
+                      current.filter((item) => item !== candidate),
+                    );
+                  }}
+                  className="min-h-10 min-w-12 rounded-xl border border-[#dfe3f4] bg-white px-3 text-lg font-black text-[#333c59] active:bg-[#e5e1ff]"
+                >
+                  {candidate}
+                </button>
+              ))}
+            </div>
+          )}
 
           <details className="group mt-3">
             <summary className="cursor-pointer list-none text-center text-sm font-bold text-[#5b4ce6]">

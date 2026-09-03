@@ -964,6 +964,20 @@ function Practice({
     return triangleValues[handwritingTarget.area][handwritingTarget.index];
   }
 
+  function handwritingRange() {
+    if (!handwritingTarget) return { min: 0, max: 99 };
+    if (handwritingTarget.kind === "math") {
+      if (task.kind === "subtract") {
+        return { min: 0, max: Math.min(9, task.max) };
+      }
+      return { min: task.min * 2, max: task.max * 2 };
+    }
+    if (handwritingTarget.area === "inside") {
+      return { min: task.min, max: task.max };
+    }
+    return { min: task.min * 2, max: task.max * 2 };
+  }
+
   function acceptHandwriting(value: string) {
     if (!handwritingTarget) return;
     if (handwritingTarget.kind === "math") {
@@ -1211,6 +1225,8 @@ function Practice({
         <HandwritingInput
           open
           initialValue={handwritingValue()}
+          minValue={handwritingRange().min}
+          maxValue={handwritingRange().max}
           onOpenChange={(open) => {
             if (!open) setHandwritingTarget(null);
           }}
