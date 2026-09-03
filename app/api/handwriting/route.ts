@@ -84,7 +84,7 @@ export async function POST(request: Request) {
     const form = new FormData();
     form.set("base64Image", payload.image);
     form.set("language", "eng");
-    form.set("OCREngine", "2");
+    form.set("OCREngine", "3");
     form.set("isOverlayRequired", "false");
 
     const controller = new AbortController();
