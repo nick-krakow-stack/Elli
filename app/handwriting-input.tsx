@@ -184,6 +184,20 @@ function hasStrongTopStroke(image: ImageData, bounds: DigitBounds) {
   return longest / bounds.width >= 0.7;
 }
 
+function hasStrongBottomStroke(image: ImageData, bounds: DigitBounds) {
+  if (bounds.width / bounds.height < 0.75) return false;
+  const firstRow = bounds.bottom - Math.ceil(bounds.height * 0.3);
+  let longest = 0;
+  for (let y = firstRow; y <= bounds.bottom; y += 1) {
+    let current = 0;
+    for (let x = bounds.left; x <= bounds.right; x += 1) {
+      current = inkAt(image.data, image.width, x, y) ? current + 1 : 0;
+      longest = Math.max(longest, current);
+    }
+  }
+  return longest / bounds.width >= 0.52;
+}
+
 function recognizeDigit(
   canvas: HTMLCanvasElement,
   image: ImageData,
@@ -218,6 +232,7 @@ function recognizeDigit(
   const ranked = classifyDigit(pixels);
   const enclosedAreas = countEnclosedAreas(image, bounds);
   const strongTopStroke = hasStrongTopStroke(image, bounds);
+  const strongBottomStroke = hasStrongBottomStroke(image, bounds);
 
   // Die in Deutschland übliche durchgestrichene 7 ähnelt im Datensatz oft
   // einer 4. Breite, offene Dreien wurden bisher häufig als 4, 5 oder 6
@@ -232,7 +247,16 @@ function recognizeDigit(
   }
   if (
     enclosedAreas === 0 &&
+    strongBottomStroke &&
+    bounds.width / bounds.height >= 0.9 &&
+    [2, 3, 4, 5, 6].includes(ranked[0].digit)
+  ) {
+    return 2;
+  }
+  if (
+    enclosedAreas === 0 &&
     !strongTopStroke &&
+    !strongBottomStroke &&
     bounds.width / bounds.height >= 1.15 &&
     [3, 4, 5, 6].includes(ranked[0].digit)
   ) {
@@ -348,7 +372,7 @@ export function HandwritingInput({
         showCloseButton={false}
         onOpenAutoFocus={(event) => event.preventDefault()}
         onPointerDownOutside={(event) => event.preventDefault()}
-        className="bottom-0 left-1/2 top-auto grid max-h-[calc(100svh-0.5rem)] w-full max-w-lg -translate-x-1/2 translate-y-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-b-none rounded-t-[2rem] border-0 bg-white p-0 shadow-[0_-24px_70px_rgba(23,32,59,0.22)] data-[state=closed]:zoom-out-100 data-[state=open]:zoom-in-100"
+        className="bottom-auto left-1/2 top-[max(0.5rem,env(safe-area-inset-top))] grid max-h-[calc(100svh-1rem)] w-[calc(100%-1rem)] max-w-lg -translate-x-1/2 translate-y-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[2rem] border-0 bg-white p-0 shadow-[0_24px_70px_rgba(23,32,59,0.22)] data-[state=closed]:zoom-out-100 data-[state=open]:zoom-in-100"
       >
         <DialogHeader className="px-5 pb-3 pt-4 text-left">
           <div className="flex items-start justify-between gap-4">
@@ -392,7 +416,7 @@ export function HandwritingInput({
             onPointerUp={finishDrawing}
             onPointerCancel={finishDrawing}
             aria-label="Schreibfeld für die Zahl"
-            className="aspect-[8/3] h-auto w-full touch-none rounded-2xl border-2 border-dashed border-[#cfd4e5] bg-[#f9faff]"
+            className="h-[clamp(6.5rem,15svh,8.5rem)] w-full touch-none rounded-2xl border-2 border-dashed border-[#cfd4e5] bg-[#f9faff]"
           />
 
           <div className="mt-3 flex min-h-14 items-center justify-between rounded-2xl bg-[#f5f7ff] px-4">
