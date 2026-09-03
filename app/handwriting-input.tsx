@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Delete, Eraser, PencilLine } from "lucide-react";
+import { Delete, Eraser, PencilLine, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Drawer,
@@ -202,9 +202,17 @@ export function HandwritingInput({
   }
 
   return (
-    <Drawer open={open} onOpenChange={onOpenChange}>
-      <DrawerContent className="max-h-[92dvh] rounded-t-[2rem] border-0 bg-white">
-        <div className="mx-auto w-full max-w-lg px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+    <Drawer
+      open={open}
+      onOpenChange={onOpenChange}
+      dismissible={false}
+      handleOnly
+    >
+      <DrawerContent className="max-h-[92dvh] rounded-t-[2rem] border-0 bg-white [&>div:first-child]:hidden">
+        <div
+          data-vaul-no-drag
+          className="mx-auto w-full max-w-lg px-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
+        >
           <DrawerHeader className="px-1 pb-3 pt-4 text-left">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -216,18 +224,29 @@ export function HandwritingInput({
                   Schreibe die ganze Zahl mit dem Finger in das Feld.
                 </DrawerDescription>
               </div>
-              <button
-                type="button"
-                onClick={() => clearWriting()}
-                className="rounded-xl p-2 text-[#737c98] hover:bg-[#f5f7ff]"
-                aria-label="Schreibfeld leeren"
-              >
-                <Eraser className="size-5" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => clearWriting()}
+                  className="rounded-xl p-2 text-[#737c98] hover:bg-[#f5f7ff]"
+                  aria-label="Schreibfeld leeren"
+                >
+                  <Eraser className="size-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onOpenChange(false)}
+                  className="rounded-xl p-2 text-[#737c98] hover:bg-[#f5f7ff]"
+                  aria-label="Schreibfeld schließen"
+                >
+                  <X className="size-5" />
+                </button>
+              </div>
             </div>
           </DrawerHeader>
 
           <canvas
+            data-vaul-no-drag
             ref={canvasRef}
             width={CANVAS_WIDTH}
             height={CANVAS_HEIGHT}
