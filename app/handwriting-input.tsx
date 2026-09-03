@@ -33,11 +33,7 @@ type InkStroke = {
   pointers: InkPoint[];
 };
 type RecognitionMode =
-  | "idle"
-  | "recognizing"
-  | "native"
-  | "ocrspace"
-  | "local";
+  "idle" | "recognizing" | "kimi" | "native" | "ocrspace" | "local";
 
 type NativeHandwritingPoint = { x: number; y: number; t?: number };
 type NativeHandwritingStroke = {
@@ -75,11 +71,23 @@ type DigitBounds = {
   width: number;
   height: number;
 };
+type DigitRecognition = {
+  digit: number;
+  confidence: number;
+  margin: number;
+  usedHeuristic: boolean;
+};
+type LocalRecognition = {
+  value: string;
+  confident: boolean;
+};
 
 const CANVAS_WIDTH = 720;
 const CANVAS_HEIGHT = 320;
 const SAME_DIGIT_GAP = 10;
 const RECOGNITION_DELAY = 700;
+const LOCAL_CONFIDENCE_MINIMUM = 0.9;
+const LOCAL_MARGIN_MINIMUM = 0.7;
 
 function normalizedNumberCandidate(
   value: unknown,
@@ -162,11 +170,7 @@ function inkAt(data: Uint8ClampedArray, width: number, x: number, y: number) {
   return data[(y * width + x) * 4 + 3] > 18;
 }
 
-function findRuns(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-) {
+function findRuns(data: Uint8ClampedArray, width: number, height: number) {
   const occupied = Array.from({ length: width }, (_, x) => {
     for (let y = 0; y < height; y += 1) {
       if (inkAt(data, width, x, y)) return true;
@@ -330,7 +334,14 @@ function recognizeDigit(
   target.width = 8;
   target.height = 8;
   const context = target.getContext("2d");
-  if (!context) return 0;
+  if (!context) {
+    return {
+      digit: 0,
+      confidence: 0,
+      margin: 0,
+      usedHeuristic: true,
+    } satisfies DigitRecognition;
+  }
   context.clearRect(0, 0, 8, 8);
 
   const scale = Math.min(6 / bounds.width, 6 / bounds.height);
@@ -359,32 +370,41 @@ function recognizeDigit(
   // Die in Deutschland übliche durchgestrichene 7 ähnelt im Datensatz oft
   // einer 4. Breite, offene Dreien wurden bisher häufig als 4, 5 oder 6
   // gelesen. Zwei geschlossene Flächen sind dagegen eindeutig eine 8.
-  if (enclosedAreas >= 2) return 8;
+  let digit = ranked[0].digit;
+  if (enclosedAreas >= 2) digit = 8;
   if (
+    digit === ranked[0].digit &&
     enclosedAreas === 0 &&
     strongTopStroke &&
     (ranked[0].digit === 4 || ranked[0].digit === 9)
   ) {
-    return 7;
+    digit = 7;
   }
   if (
+    digit === ranked[0].digit &&
     enclosedAreas === 0 &&
     strongBottomStroke &&
     bounds.width / bounds.height >= 0.9 &&
     [2, 3, 4, 5, 6].includes(ranked[0].digit)
   ) {
-    return 2;
+    digit = 2;
   }
   if (
+    digit === ranked[0].digit &&
     enclosedAreas === 0 &&
     !strongTopStroke &&
     !strongBottomStroke &&
     bounds.width / bounds.height >= 1.15 &&
     [3, 4, 5, 6].includes(ranked[0].digit)
   ) {
-    return 3;
+    digit = 3;
   }
-  return ranked[0].digit;
+  return {
+    digit,
+    confidence: ranked[0].confidence,
+    margin: ranked[0].confidence - (ranked[1]?.confidence ?? 0),
+    usedHeuristic: digit !== ranked[0].digit,
+  } satisfies DigitRecognition;
 }
 
 export function HandwritingInput({
@@ -404,12 +424,10 @@ export function HandwritingInput({
   const recognitionRequest = useRef(0);
   const nativeRecognitionAvailability = useRef<
     "unknown" | "available" | "missing"
-  >(
-    "unknown",
-  );
-  const ocrSpaceAvailability = useRef<"unknown" | "available" | "missing">(
-    "unknown",
-  );
+  >("unknown");
+  const remoteRecognitionAvailability = useRef<
+    "unknown" | "available" | "missing"
+  >("unknown");
   const [value, setValue] = useState(initialValue);
   const [hasInk, setHasInk] = useState(false);
   const [alternatives, setAlternatives] = useState<string[]>([]);
@@ -447,26 +465,104 @@ export function HandwritingInput({
   function recognizeLocally() {
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
-    if (!canvas || !context) return "";
+    if (!canvas || !context) {
+      return { value: "", confident: false } satisfies LocalRecognition;
+    }
     const image = context.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     const runs = findRuns(image.data, image.width, image.height);
-    if (!runs.length) return "";
-    return runs
-      .map((run) => recognizeDigit(canvas, image, run))
-      .join("")
-      .replace(/^0+(?=\d)/, "");
+    if (!runs.length) {
+      return { value: "", confident: false } satisfies LocalRecognition;
+    }
+    const digits = runs.map((run) => recognizeDigit(canvas, image, run));
+    return {
+      value: digits
+        .map(({ digit }) => digit)
+        .join("")
+        .replace(/^0+(?=\d)/, ""),
+      // The small local model is useful for clear handwriting, but its
+      // probabilities are not calibrated for children's writing. Keep this
+      // threshold deliberately strict and let Kimi arbitrate borderline cases.
+      confident: digits.every(
+        ({ confidence, margin, usedHeuristic }) =>
+          !usedHeuristic &&
+          confidence >= LOCAL_CONFIDENCE_MINIMUM &&
+          margin >= LOCAL_MARGIN_MINIMUM,
+      ),
+    } satisfies LocalRecognition;
   }
 
-  function applyLocalRecognition(requestId: number) {
+  function applyLocalRecognition(
+    requestId: number,
+    local: LocalRecognition,
+    alternatives: string[] = [],
+  ) {
     if (requestId !== recognitionRequest.current) return;
     const recognized = normalizedNumberCandidate(
-      recognizeLocally(),
+      local.value,
       minValue,
       maxValue,
     );
     setValue(recognized ?? "");
-    setAlternatives([]);
+    setAlternatives(
+      alternatives.filter((candidate) => candidate !== recognized).slice(0, 3),
+    );
     setRecognitionMode("local");
+  }
+
+  async function recognizeRemotely(
+    requestId: number,
+    browserCandidates: string[],
+  ) {
+    if (remoteRecognitionAvailability.current === "missing") return false;
+    try {
+      const canvas = canvasRef.current;
+      if (!canvas) return false;
+      const image = normalizedCanvasImage(canvas);
+      if (!image) return false;
+
+      const response = await fetch("/api/handwriting", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ image, minValue, maxValue }),
+      });
+      if (response.status === 503) {
+        remoteRecognitionAvailability.current = "missing";
+        return false;
+      }
+      if (!response.ok) throw new Error("Remote recognition failed");
+      const result = (await response.json()) as {
+        value?: string;
+        alternatives?: unknown;
+        provider?: "kimi" | "ocrspace";
+      };
+      if (requestId !== recognitionRequest.current) return true;
+
+      const candidates = [
+        ...new Set(
+          [
+            result.value,
+            ...(Array.isArray(result.alternatives) ? result.alternatives : []),
+          ]
+            .map((candidate) =>
+              normalizedNumberCandidate(candidate, minValue, maxValue),
+            )
+            .filter((candidate): candidate is string => candidate !== null),
+        ),
+      ].slice(0, 4);
+      if (!candidates.length) return false;
+
+      remoteRecognitionAvailability.current = "available";
+      setValue(candidates[0]);
+      setAlternatives(
+        [...new Set([...candidates.slice(1), ...browserCandidates])]
+          .filter((candidate) => candidate !== candidates[0])
+          .slice(0, 3),
+      );
+      setRecognitionMode(result.provider === "kimi" ? "kimi" : "ocrspace");
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function recognize() {
@@ -484,6 +580,13 @@ export function HandwritingInput({
       ...stroke,
       pointers: stroke.pointers.map((pointer) => ({ ...pointer })),
     }));
+    const local = recognizeLocally();
+    const localValue = normalizedNumberCandidate(
+      local.value,
+      minValue,
+      maxValue,
+    );
+    let nativeCandidates: string[] = [];
 
     if (
       nativeRecognitionAvailability.current !== "missing" &&
@@ -498,7 +601,9 @@ export function HandwritingInput({
         });
         nativeDrawing = recognizer.startDrawing({
           recognitionType: "per-character",
-          inputType: nativeInputType(capturedStrokes[0]?.pointerType ?? "touch"),
+          inputType: nativeInputType(
+            capturedStrokes[0]?.pointerType ?? "touch",
+          ),
           alternatives: 8,
         });
 
@@ -512,7 +617,7 @@ export function HandwritingInput({
 
         const predictions = await nativeDrawing.getPrediction();
         if (requestId !== recognitionRequest.current) return;
-        const candidates = [
+        nativeCandidates = [
           ...new Set(
             predictions
               .map((prediction) =>
@@ -521,11 +626,14 @@ export function HandwritingInput({
               .filter((candidate): candidate is string => candidate !== null),
           ),
         ].slice(0, 4);
-        const recognized = candidates[0] ?? "";
-        if (recognized) {
+        const recognized = nativeCandidates[0] ?? "";
+        const nativeIsConfident =
+          nativeCandidates.length === 1 ||
+          Boolean(localValue && recognized === localValue);
+        if (recognized && nativeIsConfident) {
           nativeRecognitionAvailability.current = "available";
           setValue(recognized);
-          setAlternatives(candidates.slice(1));
+          setAlternatives(nativeCandidates.slice(1));
           setRecognitionMode("native");
           return;
         }
@@ -539,50 +647,24 @@ export function HandwritingInput({
       nativeRecognitionAvailability.current = "missing";
     }
 
-    if (requestId !== recognitionRequest.current) return;
-    if (ocrSpaceAvailability.current === "missing") {
-      applyLocalRecognition(requestId);
+    if (localValue && local.confident) {
+      applyLocalRecognition(requestId, local, nativeCandidates);
       return;
     }
 
-    try {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const image = normalizedCanvasImage(canvas);
-      if (!image) {
-        applyLocalRecognition(requestId);
-        return;
-      }
-      const response = await fetch("/api/handwriting", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ image, minValue, maxValue }),
-      });
-      if (response.status === 503) {
-        ocrSpaceAvailability.current = "missing";
-        applyLocalRecognition(requestId);
-        return;
-      }
-      if (!response.ok) throw new Error("OCR.space recognition failed");
-      const result = (await response.json()) as { value?: string };
-      if (requestId !== recognitionRequest.current) return;
-      const recognized = normalizedNumberCandidate(
-        result.value,
-        minValue,
-        maxValue,
-      );
-      if (!recognized) {
-        applyLocalRecognition(requestId);
-        return;
-      }
+    const browserCandidates = [
+      ...new Set([...nativeCandidates, ...(localValue ? [localValue] : [])]),
+    ];
+    if (await recognizeRemotely(requestId, browserCandidates)) return;
+    if (requestId !== recognitionRequest.current) return;
 
-      ocrSpaceAvailability.current = "available";
-      setValue(recognized);
-      setAlternatives([]);
-      setRecognitionMode("ocrspace");
-    } catch {
-      applyLocalRecognition(requestId);
+    if (nativeCandidates[0]) {
+      setValue(nativeCandidates[0]);
+      setAlternatives(browserCandidates.slice(1, 4));
+      setRecognitionMode("native");
+      return;
     }
+    applyLocalRecognition(requestId, local);
   }
 
   function pointFromClient(
@@ -618,6 +700,8 @@ export function HandwritingInput({
       window.clearTimeout(recognizeTimer.current);
       recognizeTimer.current = null;
     }
+    // A new stroke invalidates any slower Kimi/OCR result already in flight.
+    recognitionRequest.current += 1;
     event.currentTarget.setPointerCapture(event.pointerId);
     const current = inkPoint(event.currentTarget, event);
     drawing.current = true;
@@ -645,7 +729,9 @@ export function HandwritingInput({
     if (!drawing.current) return;
     const context = event.currentTarget.getContext("2d");
     if (!context) return;
-    const coalesced = event.nativeEvent.getCoalescedEvents?.() ?? [event.nativeEvent];
+    const coalesced = event.nativeEvent.getCoalescedEvents?.() ?? [
+      event.nativeEvent,
+    ];
     coalesced.forEach((pointerEvent) => {
       const current = inkPoint(event.currentTarget, pointerEvent);
       activeStroke.current?.pointers.push(current);
@@ -675,6 +761,15 @@ export function HandwritingInput({
       current.length >= 3 ? String(digit) : `${current}${digit}`,
     );
   }
+
+  const recognitionSource =
+    recognitionMode === "kimi"
+      ? "1"
+      : recognitionMode === "ocrspace"
+        ? "2"
+        : recognitionMode === "native" || recognitionMode === "local"
+          ? "3"
+          : "";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -734,7 +829,7 @@ export function HandwritingInput({
               {recognitionMode === "recognizing"
                 ? "Elli schaut genau …"
                 : hasInk
-                  ? "Elli erkennt:"
+                  ? `Elli${recognitionSource ? ` (${recognitionSource})` : ""} erkennt:`
                   : "Erkannte Zahl:"}
             </span>
             <span className="text-3xl font-black text-[#17203b]">
