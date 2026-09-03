@@ -79,7 +79,7 @@ type DigitBounds = {
 const CANVAS_WIDTH = 720;
 const CANVAS_HEIGHT = 320;
 const SAME_DIGIT_GAP = 10;
-const RECOGNITION_DELAY = 900;
+const RECOGNITION_DELAY = 700;
 
 function normalizedNumberCandidate(
   value: unknown,
