@@ -32,7 +32,34 @@ type InkStroke = {
   pointerType: string;
   pointers: InkPoint[];
 };
-type RecognitionMode = "idle" | "recognizing" | "myscript" | "local";
+type RecognitionMode = "idle" | "recognizing" | "native" | "local";
+
+type NativeHandwritingPoint = { x: number; y: number; t?: number };
+type NativeHandwritingStroke = {
+  addPoint: (point: NativeHandwritingPoint) => void;
+};
+type NativeHandwritingPrediction = { text: string };
+type NativeHandwritingDrawing = {
+  addStroke: (stroke: NativeHandwritingStroke) => void;
+  getPrediction: () => Promise<NativeHandwritingPrediction[]>;
+  clear: () => void;
+};
+type NativeHandwritingRecognizer = {
+  startDrawing: (hints?: {
+    recognitionType?: "text" | "per-character";
+    inputType?: "mouse" | "touch" | "stylus";
+    alternatives?: number;
+  }) => NativeHandwritingDrawing;
+  finish: () => void;
+};
+type HandwritingNavigator = Navigator & {
+  createHandwritingRecognizer?: (constraint: {
+    languages: string[];
+  }) => Promise<NativeHandwritingRecognizer>;
+};
+type HandwritingWindow = Window & {
+  HandwritingStroke?: new () => NativeHandwritingStroke;
+};
 
 type ColumnRun = { start: number; end: number };
 type DigitBounds = {
@@ -48,6 +75,27 @@ const CANVAS_WIDTH = 720;
 const CANVAS_HEIGHT = 320;
 const SAME_DIGIT_GAP = 10;
 const RECOGNITION_DELAY = 620;
+
+function normalizedNumberCandidate(
+  value: unknown,
+  minValue: number,
+  maxValue: number,
+) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/\s/g, "").replace(/^\+/, "");
+  if (!/^\d{1,3}$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed) || parsed < minValue || parsed > maxValue) {
+    return null;
+  }
+  return String(parsed);
+}
+
+function nativeInputType(pointerType: string) {
+  return (["mouse", "touch", "stylus"] as const).find(
+    (type) => type === pointerType,
+  );
+}
 
 function inkAt(data: Uint8ClampedArray, width: number, x: number, y: number) {
   return data[(y * width + x) * 4 + 3] > 18;
@@ -293,7 +341,9 @@ export function HandwritingInput({
   const activeStroke = useRef<InkStroke | null>(null);
   const writingStartedAt = useRef<number | null>(null);
   const recognitionRequest = useRef(0);
-  const myScriptAvailability = useRef<"unknown" | "available" | "missing">(
+  const nativeRecognitionAvailability = useRef<
+    "unknown" | "available" | "missing"
+  >(
     "unknown",
   );
   const [value, setValue] = useState(initialValue);
@@ -344,8 +394,12 @@ export function HandwritingInput({
 
   function applyLocalRecognition(requestId: number) {
     if (requestId !== recognitionRequest.current) return;
-    const recognized = recognizeLocally();
-    setValue(recognized);
+    const recognized = normalizedNumberCandidate(
+      recognizeLocally(),
+      minValue,
+      maxValue,
+    );
+    setValue(recognized ?? "");
     setAlternatives([]);
     setRecognitionMode("local");
   }
@@ -355,7 +409,14 @@ export function HandwritingInput({
     const requestId = recognitionRequest.current + 1;
     recognitionRequest.current = requestId;
 
-    if (myScriptAvailability.current === "missing") {
+    const handwritingNavigator = navigator as HandwritingNavigator;
+    const handwritingWindow = window as HandwritingWindow;
+    if (
+      nativeRecognitionAvailability.current === "missing" ||
+      typeof handwritingNavigator.createHandwritingRecognizer !== "function" ||
+      typeof handwritingWindow.HandwritingStroke !== "function"
+    ) {
+      nativeRecognitionAvailability.current = "missing";
       applyLocalRecognition(requestId);
       return;
     }
@@ -369,46 +430,53 @@ export function HandwritingInput({
       pointers: stroke.pointers.map((pointer) => ({ ...pointer })),
     }));
 
+    let recognizer: NativeHandwritingRecognizer | null = null;
+    let nativeDrawing: NativeHandwritingDrawing | null = null;
     try {
-      const response = await fetch("/api/handwriting", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          strokes: capturedStrokes,
-          minValue,
-          maxValue,
-        }),
+      recognizer = await handwritingNavigator.createHandwritingRecognizer({
+        languages: ["en"],
+      });
+      nativeDrawing = recognizer.startDrawing({
+        recognitionType: "per-character",
+        inputType: nativeInputType(capturedStrokes[0]?.pointerType ?? "touch"),
+        alternatives: 8,
       });
 
-      if (response.status === 503) {
-        myScriptAvailability.current = "missing";
-        applyLocalRecognition(requestId);
-        return;
-      }
-      if (!response.ok) throw new Error("Handwriting recognition failed");
+      capturedStrokes.forEach((capturedStroke) => {
+        const nativeStroke = new handwritingWindow.HandwritingStroke!();
+        capturedStroke.pointers.forEach(({ x, y, t }) => {
+          nativeStroke.addPoint({ x, y, t });
+        });
+        nativeDrawing?.addStroke(nativeStroke);
+      });
 
-      const result = (await response.json()) as {
-        value?: string;
-        candidates?: string[];
-      };
+      const predictions = await nativeDrawing.getPrediction();
       if (requestId !== recognitionRequest.current) return;
-
-      const recognized = result.value?.trim() ?? "";
+      const candidates = [
+        ...new Set(
+          predictions
+            .map((prediction) =>
+              normalizedNumberCandidate(prediction.text, minValue, maxValue),
+            )
+            .filter((candidate): candidate is string => candidate !== null),
+        ),
+      ].slice(0, 4);
+      const recognized = candidates[0] ?? "";
       if (!recognized) {
         applyLocalRecognition(requestId);
         return;
       }
 
-      myScriptAvailability.current = "available";
+      nativeRecognitionAvailability.current = "available";
       setValue(recognized);
-      setAlternatives(
-        (result.candidates ?? [])
-          .filter((candidate) => candidate !== recognized)
-          .slice(0, 3),
-      );
-      setRecognitionMode("myscript");
+      setAlternatives(candidates.slice(1));
+      setRecognitionMode("native");
     } catch {
+      nativeRecognitionAvailability.current = "missing";
       applyLocalRecognition(requestId);
+    } finally {
+      nativeDrawing?.clear();
+      recognizer?.finish();
     }
   }
 
