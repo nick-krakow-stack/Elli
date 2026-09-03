@@ -36,6 +36,7 @@ type DigitBounds = {
 
 const CANVAS_WIDTH = 720;
 const CANVAS_HEIGHT = 320;
+const SAME_DIGIT_GAP = 10;
 
 function inkAt(data: Uint8ClampedArray, width: number, x: number, y: number) {
   return data[(y * width + x) * 4 + 3] > 18;
@@ -66,8 +67,9 @@ function findRuns(
   const merged: ColumnRun[] = [];
   runs.forEach((run) => {
     const previous = merged.at(-1);
-    if (previous && run.start - previous.end < 24) previous.end = run.end;
-    else merged.push({ ...run });
+    if (previous && run.start - previous.end < SAME_DIGIT_GAP) {
+      previous.end = run.end;
+    } else merged.push({ ...run });
   });
 
   while (merged.length > 3) {
