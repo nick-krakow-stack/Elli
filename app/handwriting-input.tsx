@@ -24,9 +24,17 @@ type HandwritingInputProps = {
 };
 
 type ColumnRun = { start: number; end: number };
+type DigitBounds = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  width: number;
+  height: number;
+};
 
 const CANVAS_WIDTH = 720;
-const CANVAS_HEIGHT = 250;
+const CANVAS_HEIGHT = 320;
 
 function inkAt(data: Uint8ClampedArray, width: number, x: number, y: number) {
   return data[(y * width + x) * 4 + 3] > 18;
@@ -79,11 +87,7 @@ function findRuns(
   return merged;
 }
 
-function digitPixels(
-  canvas: HTMLCanvasElement,
-  image: ImageData,
-  run: ColumnRun,
-) {
+function getDigitBounds(image: ImageData, run: ColumnRun): DigitBounds {
   let top = image.height;
   let bottom = 0;
   for (let x = run.start; x <= run.end; x += 1) {
@@ -94,31 +98,136 @@ function digitPixels(
       }
     }
   }
-  const width = Math.max(1, run.end - run.start + 1);
-  const height = Math.max(1, bottom - top + 1);
+  return {
+    left: run.start,
+    right: run.end,
+    top,
+    bottom,
+    width: Math.max(1, run.end - run.start + 1),
+    height: Math.max(1, bottom - top + 1),
+  };
+}
+
+function countEnclosedAreas(image: ImageData, bounds: DigitBounds) {
+  const paddedWidth = bounds.width + 2;
+  const paddedHeight = bounds.height + 2;
+  const size = paddedWidth * paddedHeight;
+  const solid = new Uint8Array(size);
+  const visited = new Uint8Array(size);
+  const queue = new Int32Array(size);
+
+  for (let y = 0; y < bounds.height; y += 1) {
+    for (let x = 0; x < bounds.width; x += 1) {
+      if (inkAt(image.data, image.width, bounds.left + x, bounds.top + y)) {
+        solid[(y + 1) * paddedWidth + x + 1] = 1;
+      }
+    }
+  }
+
+  function flood(start: number) {
+    let read = 0;
+    let write = 0;
+    let area = 0;
+    queue[write] = start;
+    write += 1;
+    visited[start] = 1;
+
+    while (read < write) {
+      const index = queue[read];
+      read += 1;
+      area += 1;
+      const x = index % paddedWidth;
+      const y = Math.floor(index / paddedWidth);
+      const neighbors = [
+        x > 0 ? index - 1 : -1,
+        x < paddedWidth - 1 ? index + 1 : -1,
+        y > 0 ? index - paddedWidth : -1,
+        y < paddedHeight - 1 ? index + paddedWidth : -1,
+      ];
+      neighbors.forEach((neighbor) => {
+        if (neighbor >= 0 && !solid[neighbor] && !visited[neighbor]) {
+          visited[neighbor] = 1;
+          queue[write] = neighbor;
+          write += 1;
+        }
+      });
+    }
+    return area;
+  }
+
+  flood(0);
+  const minimumArea = Math.max(
+    16,
+    Math.floor(bounds.width * bounds.height * 0.005),
+  );
+  let enclosedAreas = 0;
+  for (let index = 0; index < size; index += 1) {
+    if (!solid[index] && !visited[index] && flood(index) >= minimumArea) {
+      enclosedAreas += 1;
+    }
+  }
+  return enclosedAreas;
+}
+
+function hasStrongTopStroke(image: ImageData, bounds: DigitBounds) {
+  if (bounds.width / bounds.height < 0.6) return false;
+  const lastRow = bounds.top + Math.ceil(bounds.height * 0.35);
+  let longest = 0;
+  for (let y = bounds.top; y <= lastRow; y += 1) {
+    let current = 0;
+    for (let x = bounds.left; x <= bounds.right; x += 1) {
+      current = inkAt(image.data, image.width, x, y) ? current + 1 : 0;
+      longest = Math.max(longest, current);
+    }
+  }
+  return longest / bounds.width >= 0.7;
+}
+
+function recognizeDigit(
+  canvas: HTMLCanvasElement,
+  image: ImageData,
+  run: ColumnRun,
+) {
+  const bounds = getDigitBounds(image, run);
   const target = document.createElement("canvas");
   target.width = 8;
   target.height = 8;
   const context = target.getContext("2d");
-  if (!context) return Array(64).fill(0) as number[];
+  if (!context) return 0;
   context.clearRect(0, 0, 8, 8);
 
-  const scale = Math.min(6 / width, 6 / height);
-  const drawWidth = Math.max(1, width * scale);
-  const drawHeight = Math.max(1, height * scale);
+  const scale = Math.min(6 / bounds.width, 6 / bounds.height);
+  const drawWidth = Math.max(1, bounds.width * scale);
+  const drawHeight = Math.max(1, bounds.height * scale);
   context.drawImage(
     canvas,
-    run.start,
-    top,
-    width,
-    height,
+    bounds.left,
+    bounds.top,
+    bounds.width,
+    bounds.height,
     1 + (6 - drawWidth) / 2,
     1 + (6 - drawHeight) / 2,
     drawWidth,
     drawHeight,
   );
   const small = context.getImageData(0, 0, 8, 8).data;
-  return Array.from({ length: 64 }, (_, index) => small[index * 4 + 3] / 255);
+  const pixels = Array.from({ length: 64 }, (_, index) =>
+    Math.min(1, (small[index * 4 + 3] / 255) * 1.8),
+  );
+  const ranked = classifyDigit(pixels);
+  const enclosedAreas = countEnclosedAreas(image, bounds);
+
+  // Die in Deutschland übliche durchgestrichene 7 ähnelt im Datensatz oft
+  // einer 4. Zwei geschlossene Flächen sind dagegen eindeutig eine 8.
+  if (enclosedAreas >= 2) return 8;
+  if (
+    enclosedAreas === 0 &&
+    hasStrongTopStroke(image, bounds) &&
+    (ranked[0].digit === 4 || ranked[0].digit === 9)
+  ) {
+    return 7;
+  }
+  return ranked[0].digit;
 }
 
 export function HandwritingInput({
@@ -148,7 +257,7 @@ export function HandwritingInput({
     const runs = findRuns(image.data, image.width, image.height);
     if (!runs.length) return;
     const recognized = runs
-      .map((run) => classifyDigit(digitPixels(canvas, image, run))[0].digit)
+      .map((run) => recognizeDigit(canvas, image, run))
       .join("");
     setValue(recognized.replace(/^0+(?=\d)/, ""));
   }
@@ -255,7 +364,7 @@ export function HandwritingInput({
             onPointerUp={finishDrawing}
             onPointerCancel={finishDrawing}
             aria-label="Schreibfeld für die Zahl"
-            className="h-40 w-full touch-none rounded-2xl border-2 border-dashed border-[#cfd4e5] bg-[#f9faff]"
+            className="aspect-[9/4] h-auto w-full touch-none rounded-2xl border-2 border-dashed border-[#cfd4e5] bg-[#f9faff]"
           />
 
           <div className="mt-3 flex min-h-14 items-center justify-between rounded-2xl bg-[#f5f7ff] px-4">
