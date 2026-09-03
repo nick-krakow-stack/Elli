@@ -32,7 +32,12 @@ type InkStroke = {
   pointerType: string;
   pointers: InkPoint[];
 };
-type RecognitionMode = "idle" | "recognizing" | "native" | "local";
+type RecognitionMode =
+  | "idle"
+  | "recognizing"
+  | "native"
+  | "ocrspace"
+  | "local";
 
 type NativeHandwritingPoint = { x: number; y: number; t?: number };
 type NativeHandwritingStroke = {
@@ -74,7 +79,7 @@ type DigitBounds = {
 const CANVAS_WIDTH = 720;
 const CANVAS_HEIGHT = 320;
 const SAME_DIGIT_GAP = 10;
-const RECOGNITION_DELAY = 620;
+const RECOGNITION_DELAY = 900;
 
 function normalizedNumberCandidate(
   value: unknown,
@@ -95,6 +100,62 @@ function nativeInputType(pointerType: string) {
   return (["mouse", "touch", "stylus"] as const).find(
     (type) => type === pointerType,
   );
+}
+
+function normalizedCanvasImage(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d");
+  if (!context) return "";
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
+  let left = canvas.width;
+  let right = -1;
+  let top = canvas.height;
+  let bottom = -1;
+
+  for (let y = 0; y < canvas.height; y += 1) {
+    for (let x = 0; x < canvas.width; x += 1) {
+      if (image.data[(y * canvas.width + x) * 4 + 3] > 18) {
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        top = Math.min(top, y);
+        bottom = Math.max(bottom, y);
+      }
+    }
+  }
+  if (right < left || bottom < top) return "";
+
+  const padding = 22;
+  const sourceLeft = Math.max(0, left - padding);
+  const sourceTop = Math.max(0, top - padding);
+  const sourceRight = Math.min(canvas.width, right + padding);
+  const sourceBottom = Math.min(canvas.height, bottom + padding);
+  const sourceWidth = sourceRight - sourceLeft;
+  const sourceHeight = sourceBottom - sourceTop;
+  const target = document.createElement("canvas");
+  target.width = CANVAS_WIDTH;
+  target.height = CANVAS_HEIGHT;
+  const targetContext = target.getContext("2d");
+  if (!targetContext) return "";
+
+  targetContext.fillStyle = "#ffffff";
+  targetContext.fillRect(0, 0, target.width, target.height);
+  const scale = Math.min(
+    (target.width - 72) / sourceWidth,
+    (target.height - 48) / sourceHeight,
+  );
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  targetContext.drawImage(
+    canvas,
+    sourceLeft,
+    sourceTop,
+    sourceWidth,
+    sourceHeight,
+    (target.width - width) / 2,
+    (target.height - height) / 2,
+    width,
+    height,
+  );
+  return target.toDataURL("image/png");
 }
 
 function inkAt(data: Uint8ClampedArray, width: number, x: number, y: number) {
@@ -346,6 +407,9 @@ export function HandwritingInput({
   >(
     "unknown",
   );
+  const ocrSpaceAvailability = useRef<"unknown" | "available" | "missing">(
+    "unknown",
+  );
   const [value, setValue] = useState(initialValue);
   const [hasInk, setHasInk] = useState(false);
   const [alternatives, setAlternatives] = useState<string[]>([]);
@@ -354,6 +418,7 @@ export function HandwritingInput({
 
   useEffect(
     () => () => {
+      recognitionRequest.current += 1;
       if (recognizeTimer.current !== null) {
         window.clearTimeout(recognizeTimer.current);
       }
@@ -411,16 +476,6 @@ export function HandwritingInput({
 
     const handwritingNavigator = navigator as HandwritingNavigator;
     const handwritingWindow = window as HandwritingWindow;
-    if (
-      nativeRecognitionAvailability.current === "missing" ||
-      typeof handwritingNavigator.createHandwritingRecognizer !== "function" ||
-      typeof handwritingWindow.HandwritingStroke !== "function"
-    ) {
-      nativeRecognitionAvailability.current = "missing";
-      applyLocalRecognition(requestId);
-      return;
-    }
-
     setRecognitionMode("recognizing");
     setValue("");
     setAlternatives([]);
@@ -430,53 +485,103 @@ export function HandwritingInput({
       pointers: stroke.pointers.map((pointer) => ({ ...pointer })),
     }));
 
-    let recognizer: NativeHandwritingRecognizer | null = null;
-    let nativeDrawing: NativeHandwritingDrawing | null = null;
-    try {
-      recognizer = await handwritingNavigator.createHandwritingRecognizer({
-        languages: ["en"],
-      });
-      nativeDrawing = recognizer.startDrawing({
-        recognitionType: "per-character",
-        inputType: nativeInputType(capturedStrokes[0]?.pointerType ?? "touch"),
-        alternatives: 8,
-      });
-
-      capturedStrokes.forEach((capturedStroke) => {
-        const nativeStroke = new handwritingWindow.HandwritingStroke!();
-        capturedStroke.pointers.forEach(({ x, y, t }) => {
-          nativeStroke.addPoint({ x, y, t });
+    if (
+      nativeRecognitionAvailability.current !== "missing" &&
+      typeof handwritingNavigator.createHandwritingRecognizer === "function" &&
+      typeof handwritingWindow.HandwritingStroke === "function"
+    ) {
+      let recognizer: NativeHandwritingRecognizer | null = null;
+      let nativeDrawing: NativeHandwritingDrawing | null = null;
+      try {
+        recognizer = await handwritingNavigator.createHandwritingRecognizer({
+          languages: ["en"],
         });
-        nativeDrawing?.addStroke(nativeStroke);
-      });
+        nativeDrawing = recognizer.startDrawing({
+          recognitionType: "per-character",
+          inputType: nativeInputType(capturedStrokes[0]?.pointerType ?? "touch"),
+          alternatives: 8,
+        });
 
-      const predictions = await nativeDrawing.getPrediction();
+        capturedStrokes.forEach((capturedStroke) => {
+          const nativeStroke = new handwritingWindow.HandwritingStroke!();
+          capturedStroke.pointers.forEach(({ x, y, t }) => {
+            nativeStroke.addPoint({ x, y, t });
+          });
+          nativeDrawing?.addStroke(nativeStroke);
+        });
+
+        const predictions = await nativeDrawing.getPrediction();
+        if (requestId !== recognitionRequest.current) return;
+        const candidates = [
+          ...new Set(
+            predictions
+              .map((prediction) =>
+                normalizedNumberCandidate(prediction.text, minValue, maxValue),
+              )
+              .filter((candidate): candidate is string => candidate !== null),
+          ),
+        ].slice(0, 4);
+        const recognized = candidates[0] ?? "";
+        if (recognized) {
+          nativeRecognitionAvailability.current = "available";
+          setValue(recognized);
+          setAlternatives(candidates.slice(1));
+          setRecognitionMode("native");
+          return;
+        }
+      } catch {
+        nativeRecognitionAvailability.current = "missing";
+      } finally {
+        nativeDrawing?.clear();
+        recognizer?.finish();
+      }
+    } else {
+      nativeRecognitionAvailability.current = "missing";
+    }
+
+    if (requestId !== recognitionRequest.current) return;
+    if (ocrSpaceAvailability.current === "missing") {
+      applyLocalRecognition(requestId);
+      return;
+    }
+
+    try {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const image = normalizedCanvasImage(canvas);
+      if (!image) {
+        applyLocalRecognition(requestId);
+        return;
+      }
+      const response = await fetch("/api/handwriting", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ image, minValue, maxValue }),
+      });
+      if (response.status === 503) {
+        ocrSpaceAvailability.current = "missing";
+        applyLocalRecognition(requestId);
+        return;
+      }
+      if (!response.ok) throw new Error("OCR.space recognition failed");
+      const result = (await response.json()) as { value?: string };
       if (requestId !== recognitionRequest.current) return;
-      const candidates = [
-        ...new Set(
-          predictions
-            .map((prediction) =>
-              normalizedNumberCandidate(prediction.text, minValue, maxValue),
-            )
-            .filter((candidate): candidate is string => candidate !== null),
-        ),
-      ].slice(0, 4);
-      const recognized = candidates[0] ?? "";
+      const recognized = normalizedNumberCandidate(
+        result.value,
+        minValue,
+        maxValue,
+      );
       if (!recognized) {
         applyLocalRecognition(requestId);
         return;
       }
 
-      nativeRecognitionAvailability.current = "available";
+      ocrSpaceAvailability.current = "available";
       setValue(recognized);
-      setAlternatives(candidates.slice(1));
-      setRecognitionMode("native");
+      setAlternatives([]);
+      setRecognitionMode("ocrspace");
     } catch {
-      nativeRecognitionAvailability.current = "missing";
       applyLocalRecognition(requestId);
-    } finally {
-      nativeDrawing?.clear();
-      recognizer?.finish();
     }
   }
 
