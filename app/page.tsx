@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { FormEvent, useEffect, useState } from "react";
 import {
   BookOpen,
@@ -9,7 +10,6 @@ import {
   LogOut,
   Plus,
   Shapes,
-  Sparkles,
   Target,
   Trash2,
   X,
@@ -235,11 +235,14 @@ function Shell({
       <header className="border-b border-[#dfe3f4] bg-white/90 px-5 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="grid size-10 place-items-center rounded-2xl bg-[#5b4ce6] text-white">
-              <Sparkles size={21} />
-            </div>
+            <Image
+              src="/elli-logo.png"
+              alt="Elli"
+              width={720}
+              height={317}
+              className="h-9 w-auto sm:h-10"
+            />
             <div>
-              <div className="text-xl font-extrabold tracking-tight">Elli</div>
               <div className="text-xs font-semibold text-[#7c849f]">{role}</div>
             </div>
           </div>
@@ -276,14 +279,15 @@ function Login({ onLogin }: { onLogin: (role: Role) => void }) {
       <div className="absolute -left-24 top-20 size-72 rounded-full bg-[#dff8ee] blur-2xl" />
       <div className="absolute -right-24 bottom-10 size-80 rounded-full bg-[#e2deff] blur-2xl" />
       <div className="relative w-full max-w-md rounded-[2rem] border border-white bg-white p-7 shadow-[0_30px_80px_rgba(76,65,170,.15)] sm:p-10">
-        <div className="mb-8 flex items-center gap-3">
-          <div className="grid size-12 place-items-center rounded-2xl bg-[#5b4ce6] text-white">
-            <Sparkles />
-          </div>
-          <div>
-            <h1 className="text-3xl font-black tracking-tight">Elli</h1>
-            <p className="text-[#737c98]">Dein Lerntraining</p>
-          </div>
+        <div className="mb-8 text-center">
+          <Image
+            src="/elli-logo.png"
+            alt="Elli"
+            width={720}
+            height={317}
+            className="mx-auto h-auto w-44"
+          />
+          <p className="mt-2 text-[#737c98]">Dein Lerntraining</p>
         </div>
         <form onSubmit={submit} className="space-y-5">
           <label className="block text-sm font-bold">
