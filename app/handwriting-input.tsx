@@ -217,16 +217,26 @@ function recognizeDigit(
   );
   const ranked = classifyDigit(pixels);
   const enclosedAreas = countEnclosedAreas(image, bounds);
+  const strongTopStroke = hasStrongTopStroke(image, bounds);
 
   // Die in Deutschland übliche durchgestrichene 7 ähnelt im Datensatz oft
-  // einer 4. Zwei geschlossene Flächen sind dagegen eindeutig eine 8.
+  // einer 4. Breite, offene Dreien wurden bisher häufig als 4, 5 oder 6
+  // gelesen. Zwei geschlossene Flächen sind dagegen eindeutig eine 8.
   if (enclosedAreas >= 2) return 8;
   if (
     enclosedAreas === 0 &&
-    hasStrongTopStroke(image, bounds) &&
+    strongTopStroke &&
     (ranked[0].digit === 4 || ranked[0].digit === 9)
   ) {
     return 7;
+  }
+  if (
+    enclosedAreas === 0 &&
+    !strongTopStroke &&
+    bounds.width / bounds.height >= 1.15 &&
+    [3, 4, 5, 6].includes(ranked[0].digit)
+  ) {
+    return 3;
   }
   return ranked[0].digit;
 }
@@ -338,41 +348,41 @@ export function HandwritingInput({
         showCloseButton={false}
         onOpenAutoFocus={(event) => event.preventDefault()}
         onPointerDownOutside={(event) => event.preventDefault()}
-        className="bottom-0 left-1/2 top-auto max-h-[92dvh] w-full max-w-lg -translate-x-1/2 translate-y-0 gap-0 overflow-y-auto overscroll-contain rounded-b-none rounded-t-[2rem] border-0 bg-white p-0 shadow-[0_-24px_70px_rgba(23,32,59,0.22)] data-[state=closed]:zoom-out-100 data-[state=open]:zoom-in-100"
+        className="bottom-0 left-1/2 top-auto grid max-h-[calc(100svh-0.5rem)] w-full max-w-lg -translate-x-1/2 translate-y-0 grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-b-none rounded-t-[2rem] border-0 bg-white p-0 shadow-[0_-24px_70px_rgba(23,32,59,0.22)] data-[state=closed]:zoom-out-100 data-[state=open]:zoom-in-100"
       >
-        <div className="mx-auto w-full px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <DialogHeader className="px-1 pb-3 pt-4 text-left">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <DialogTitle className="flex items-center gap-2 text-xl font-black text-[#17203b]">
-                  <PencilLine className="size-5 text-[#5b4ce6]" />
-                  Zahl schreiben
-                </DialogTitle>
-                <DialogDescription className="mt-1 text-[#737c98]">
-                  Schreibe die ganze Zahl mit dem Finger in das Feld.
-                </DialogDescription>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => clearWriting()}
-                  className="rounded-xl p-2 text-[#737c98] hover:bg-[#f5f7ff]"
-                  aria-label="Schreibfeld leeren"
-                >
-                  <Eraser className="size-5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onOpenChange(false)}
-                  className="rounded-xl p-2 text-[#737c98] hover:bg-[#f5f7ff]"
-                  aria-label="Schreibfeld schließen"
-                >
-                  <X className="size-5" />
-                </button>
-              </div>
+        <DialogHeader className="px-5 pb-3 pt-4 text-left">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <DialogTitle className="flex items-center gap-2 text-xl font-black text-[#17203b]">
+                <PencilLine className="size-5 text-[#5b4ce6]" />
+                Zahl schreiben
+              </DialogTitle>
+              <DialogDescription className="sr-only">
+                Schreibe die ganze Zahl mit dem Finger in das Feld.
+              </DialogDescription>
             </div>
-          </DialogHeader>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => clearWriting()}
+                className="rounded-xl p-2 text-[#737c98] hover:bg-[#f5f7ff]"
+                aria-label="Schreibfeld leeren"
+              >
+                <Eraser className="size-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenChange(false)}
+                className="rounded-xl p-2 text-[#737c98] hover:bg-[#f5f7ff]"
+                aria-label="Schreibfeld schließen"
+              >
+                <X className="size-5" />
+              </button>
+            </div>
+          </div>
+        </DialogHeader>
 
+        <div className="min-h-0 overflow-y-auto overscroll-contain px-4">
           <canvas
             ref={canvasRef}
             width={CANVAS_WIDTH}
@@ -382,7 +392,7 @@ export function HandwritingInput({
             onPointerUp={finishDrawing}
             onPointerCancel={finishDrawing}
             aria-label="Schreibfeld für die Zahl"
-            className="aspect-[9/4] h-auto w-full touch-none rounded-2xl border-2 border-dashed border-[#cfd4e5] bg-[#f9faff]"
+            className="aspect-[8/3] h-auto w-full touch-none rounded-2xl border-2 border-dashed border-[#cfd4e5] bg-[#f9faff]"
           />
 
           <div className="mt-3 flex min-h-14 items-center justify-between rounded-2xl bg-[#f5f7ff] px-4">
@@ -419,7 +429,9 @@ export function HandwritingInput({
               </button>
             </div>
           </details>
+        </div>
 
+        <div className="bg-white px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
           <Button
             type="button"
             disabled={!value}
@@ -427,7 +439,7 @@ export function HandwritingInput({
               onSubmit(value);
               onOpenChange(false);
             }}
-            className="mt-4 h-13 w-full rounded-2xl bg-[#5b4ce6] text-base font-bold hover:bg-[#493bc9]"
+            className="h-13 w-full rounded-2xl bg-[#5b4ce6] text-base font-bold hover:bg-[#493bc9]"
           >
             {value ? `${value} übernehmen` : "Zahl übernehmen"}
           </Button>
