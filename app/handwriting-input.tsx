@@ -2,18 +2,19 @@
 
 import {
   PointerEvent as ReactPointerEvent,
+  useEffect,
   useRef,
   useState,
 } from "react";
 import { Delete, Eraser, PencilLine, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  Drawer,
-  DrawerContent,
-  DrawerDescription,
-  DrawerHeader,
-  DrawerTitle,
-} from "@/components/ui/drawer";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { classifyDigit } from "@/lib/digit-model";
 
 type HandwritingInputProps = {
@@ -238,10 +239,24 @@ export function HandwritingInput({
 }: HandwritingInputProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawing = useRef(false);
+  const recognizeTimer = useRef<number | null>(null);
   const [value, setValue] = useState(initialValue);
   const [hasInk, setHasInk] = useState(false);
 
+  useEffect(
+    () => () => {
+      if (recognizeTimer.current !== null) {
+        window.clearTimeout(recognizeTimer.current);
+      }
+    },
+    [],
+  );
+
   function clearWriting(keepValue = false) {
+    if (recognizeTimer.current !== null) {
+      window.clearTimeout(recognizeTimer.current);
+      recognizeTimer.current = null;
+    }
     canvasRef.current
       ?.getContext("2d")
       ?.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -274,6 +289,10 @@ export function HandwritingInput({
   function startDrawing(event: ReactPointerEvent<HTMLCanvasElement>) {
     const context = event.currentTarget.getContext("2d");
     if (!context) return;
+    if (recognizeTimer.current !== null) {
+      window.clearTimeout(recognizeTimer.current);
+      recognizeTimer.current = null;
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     const current = point(event);
     drawing.current = true;
@@ -300,7 +319,10 @@ export function HandwritingInput({
     if (!drawing.current) return;
     drawing.current = false;
     event.currentTarget.releasePointerCapture(event.pointerId);
-    window.setTimeout(recognize, 80);
+    recognizeTimer.current = window.setTimeout(() => {
+      recognizeTimer.current = null;
+      recognize();
+    }, 360);
   }
 
   function typeDigit(digit: number) {
@@ -311,27 +333,24 @@ export function HandwritingInput({
   }
 
   return (
-    <Drawer
-      open={open}
-      onOpenChange={onOpenChange}
-      dismissible={false}
-      handleOnly
-    >
-      <DrawerContent className="max-h-[92dvh] rounded-t-[2rem] border-0 bg-white [&>div:first-child]:hidden">
-        <div
-          data-vaul-no-drag
-          className="mx-auto w-full max-w-lg px-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
-        >
-          <DrawerHeader className="px-1 pb-3 pt-4 text-left">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        showCloseButton={false}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onPointerDownOutside={(event) => event.preventDefault()}
+        className="bottom-0 left-1/2 top-auto max-h-[92dvh] w-full max-w-lg -translate-x-1/2 translate-y-0 gap-0 overflow-y-auto overscroll-contain rounded-b-none rounded-t-[2rem] border-0 bg-white p-0 shadow-[0_-24px_70px_rgba(23,32,59,0.22)] data-[state=closed]:zoom-out-100 data-[state=open]:zoom-in-100"
+      >
+        <div className="mx-auto w-full px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <DialogHeader className="px-1 pb-3 pt-4 text-left">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <DrawerTitle className="flex items-center gap-2 text-xl font-black text-[#17203b]">
+                <DialogTitle className="flex items-center gap-2 text-xl font-black text-[#17203b]">
                   <PencilLine className="size-5 text-[#5b4ce6]" />
                   Zahl schreiben
-                </DrawerTitle>
-                <DrawerDescription className="mt-1 text-[#737c98]">
+                </DialogTitle>
+                <DialogDescription className="mt-1 text-[#737c98]">
                   Schreibe die ganze Zahl mit dem Finger in das Feld.
-                </DrawerDescription>
+                </DialogDescription>
               </div>
               <div className="flex items-center gap-1">
                 <button
@@ -352,10 +371,9 @@ export function HandwritingInput({
                 </button>
               </div>
             </div>
-          </DrawerHeader>
+          </DialogHeader>
 
           <canvas
-            data-vaul-no-drag
             ref={canvasRef}
             width={CANVAS_WIDTH}
             height={CANVAS_HEIGHT}
@@ -414,7 +432,7 @@ export function HandwritingInput({
             {value ? `${value} übernehmen` : "Zahl übernehmen"}
           </Button>
         </div>
-      </DrawerContent>
-    </Drawer>
+      </DialogContent>
+    </Dialog>
   );
 }
