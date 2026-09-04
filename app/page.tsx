@@ -60,11 +60,11 @@ type HandwritingTarget =
 const seed: Task[] = [
   {
     id: 1,
-    title: "Minus über den Zehner",
+    title: "Minus bis 10",
     subject: "Mathe",
     goal: 10,
     min: 0,
-    max: 20,
+    max: 10,
     kind: "subtract",
   },
   {
@@ -136,11 +136,10 @@ function makeQuestion(task: Task): Question {
     return { kind: "math", label: `${a} + ${b}`, answer: a + b };
   }
 
-  // Zweite Klasse: über den Zehner, aber niemals unter 0.
-  const a = random(11, Math.max(11, task.max));
-  const result = random(0, Math.min(9, a - 1));
-  const b = a - result;
-  return { kind: "math", label: `${a} − ${b}`, answer: result };
+  // Zweite Klasse: Beide Zahlen und das Ergebnis bleiben zwischen 0 und 10.
+  const a = random(task.min, Math.min(10, task.max));
+  const b = random(0, a);
+  return { kind: "math", label: `${a} − ${b}`, answer: a - b };
 }
 
 function normalizeTasks(value: unknown): Task[] {
@@ -158,13 +157,14 @@ function normalizeTasks(value: unknown): Task[] {
     return {
       id: task.id ?? Date.now(),
       title:
-        kind === "subtract" && title === "Minus über Null"
-          ? "Minus über den Zehner"
+        kind === "subtract" &&
+        (title === "Minus über Null" || title === "Minus über den Zehner")
+          ? "Minus bis 10"
           : title,
       subject: task.subject ?? "Mathe",
       goal: task.goal ?? 10,
       min: task.min ?? (kind === "triangle" ? 1 : 0),
-      max: kind === "subtract" ? 20 : (task.max ?? 9),
+      max: kind === "subtract" ? 10 : (task.max ?? 9),
       kind,
     };
   });
@@ -337,7 +337,7 @@ function Admin({
 }) {
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<ExerciseKind>("subtract");
-  const [title, setTitle] = useState("Minus über den Zehner");
+  const [title, setTitle] = useState("Minus bis 10");
   const [goal, setGoal] = useState(10);
 
   function changeKind(value: ExerciseKind) {
@@ -347,7 +347,7 @@ function Admin({
         ? "Rechendreiecke"
         : value === "add"
           ? "Plus bis 20"
-          : "Minus über den Zehner",
+          : "Minus bis 10",
     );
   }
 
@@ -362,7 +362,7 @@ function Admin({
         subject: "Mathe",
         goal,
         min: kind === "triangle" ? 1 : 0,
-        max: kind === "triangle" ? 9 : 20,
+        max: kind === "triangle" ? 9 : kind === "subtract" ? 10 : 20,
         kind,
       },
     ]);
@@ -401,7 +401,9 @@ function Admin({
                 <p className="text-sm font-bold text-[#7c849f]">
                   {task.subject} · {kindLabel(task.kind)}
                 </p>
-                <h2 className="truncate text-lg font-extrabold">{task.title}</h2>
+                <h2 className="truncate text-lg font-extrabold">
+                  {task.title}
+                </h2>
                 <p className="text-sm text-[#626b86]">
                   Ziel: {task.goal} richtige Antworten
                 </p>
@@ -453,7 +455,9 @@ function Admin({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="subtract">Minus über den Zehner</SelectItem>
+                    <SelectItem value="subtract">
+                      Minus bis 10
+                    </SelectItem>
                     <SelectItem value="add">Plus bis 20</SelectItem>
                     <SelectItem value="triangle">Rechendreiecke</SelectItem>
                   </SelectContent>
@@ -513,7 +517,9 @@ function TaskIcon({ kind }: { kind: ExerciseKind }) {
         ? "bg-[#fff1cf] text-[#9a6400]"
         : "bg-[#e5e1ff] text-[#5b4ce6]";
   return (
-    <div className={`grid size-14 shrink-0 place-items-center rounded-2xl ${styles}`}>
+    <div
+      className={`grid size-14 shrink-0 place-items-center rounded-2xl ${styles}`}
+    >
       {kind === "triangle" ? (
         <Shapes />
       ) : kind === "add" ? (
@@ -663,11 +669,7 @@ function TriangleBoard({
   compact: boolean;
   onFocus: () => void;
   onBlur: () => void;
-  onChange: (
-    area: "inside" | "outside",
-    index: number,
-    value: string,
-  ) => void;
+  onChange: (area: "inside" | "outside", index: number, value: string) => void;
   handwriting: boolean;
   onHandwriting: (area: "inside" | "outside", index: number) => void;
 }) {
@@ -682,10 +684,8 @@ function TriangleBoard({
     { left: "50%", top: "91%" },
   ];
   function fieldClass(status: FieldStatus) {
-    if (status === "right")
-      return "border-[#27a875] text-[#086b48]";
-    if (status === "wrong")
-      return "border-red-500 text-red-800";
+    if (status === "right") return "border-[#27a875] text-[#086b48]";
+    if (status === "wrong") return "border-red-500 text-red-800";
     return "border-[#aeb5ca] text-[#17203b]";
   }
 
@@ -764,9 +764,7 @@ function TriangleBoard({
             inputMode="numeric"
             enterKeyHint="next"
             value={values.inside[index]}
-            onChange={(event) =>
-              onChange("inside", index, event.target.value)
-            }
+            onChange={(event) => onChange("inside", index, event.target.value)}
             onFocus={onFocus}
             onBlur={onBlur}
             aria-label={`Fehlende innere Zahl ${index + 1}`}
@@ -804,9 +802,7 @@ function TriangleBoard({
             inputMode="numeric"
             enterKeyHint="next"
             value={values.outside[index]}
-            onChange={(event) =>
-              onChange("outside", index, event.target.value)
-            }
+            onChange={(event) => onChange("outside", index, event.target.value)}
             onFocus={onFocus}
             onBlur={onBlur}
             aria-label={`Fehlende äußere Zahl ${index + 1}`}
@@ -965,17 +961,10 @@ function Practice({
   }
 
   function handwritingRange() {
-    if (!handwritingTarget) return { min: 0, max: 99 };
-    if (handwritingTarget.kind === "math") {
-      if (task.kind === "subtract") {
-        return { min: 0, max: Math.min(9, task.max) };
-      }
-      return { min: task.min * 2, max: task.max * 2 };
-    }
-    if (handwritingTarget.area === "inside") {
-      return { min: task.min, max: task.max };
-    }
-    return { min: task.min * 2, max: task.max * 2 };
+    // Recognition should report what the child wrote, even when that number is
+    // not a valid answer for the current exercise. Mathematical validation and
+    // its red/green feedback happen only after the value has been accepted.
+    return { min: 0, max: 99 };
   }
 
   function acceptHandwriting(value: string) {
@@ -984,11 +973,7 @@ function Practice({
       setInput(value);
       return;
     }
-    changeTriangleValue(
-      handwritingTarget.area,
-      handwritingTarget.index,
-      value,
-    );
+    changeTriangleValue(handwritingTarget.area, handwritingTarget.index, value);
   }
 
   if (finished)
@@ -1054,9 +1039,7 @@ function Practice({
         >
           <p
             className={`text-center font-extrabold uppercase text-[#7c849f] transition-all ${
-              compact
-                ? "text-xs tracking-[.12em]"
-                : "text-sm tracking-[.18em]"
+              compact ? "text-xs tracking-[.12em]" : "text-sm tracking-[.18em]"
             }`}
           >
             {task.title}
