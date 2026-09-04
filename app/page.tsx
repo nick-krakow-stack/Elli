@@ -7,6 +7,7 @@ import {
   Calculator,
   Check,
   ChevronRight,
+  Languages,
   LogOut,
   Plus,
   Shapes,
@@ -17,7 +18,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 import { HandwritingInput } from "@/app/handwriting-input";
+import { ReadingPractice, readingUnits } from "@/app/reading-practice";
 import {
   Select,
   SelectContent,
@@ -27,7 +30,12 @@ import {
 } from "@/components/ui/select";
 
 type Role = "admin" | "student";
-type ExerciseKind = "subtract" | "add" | "triangle";
+type ExerciseKind =
+  | "subtract"
+  | "add"
+  | "triangle"
+  | "read_words"
+  | "read_sentences";
 type Task = {
   id: number;
   title: string;
@@ -36,6 +44,7 @@ type Task = {
   min: number;
   max: number;
   kind: ExerciseKind;
+  content?: string;
 };
 type Result = { done: number; correct: number };
 type MathQuestion = { kind: "math"; label: string; answer: number };
@@ -75,6 +84,27 @@ const seed: Task[] = [
     min: 1,
     max: 9,
     kind: "triangle",
+  },
+  {
+    id: 4,
+    title: "Wörter lesen",
+    subject: "Deutsch",
+    goal: 10,
+    min: 0,
+    max: 0,
+    kind: "read_words",
+    content: "Haus Sonne Maus Schule Blume Garten Wolke Fenster Kinder Regen",
+  },
+  {
+    id: 5,
+    title: "Sätze lesen",
+    subject: "Deutsch",
+    goal: 3,
+    min: 0,
+    max: 0,
+    kind: "read_sentences",
+    content:
+      "Der kleine Hund rennt durch den Garten. Mia sieht einen roten Ball. Gemeinsam spielen sie auf der Wiese.",
   },
 ];
 
@@ -144,16 +174,21 @@ function makeQuestion(task: Task): Question {
 
 function normalizeTasks(value: unknown): Task[] {
   if (!Array.isArray(value)) return seed;
-  const normalized = value.map((raw) => {
+  const normalized: Task[] = value.map((raw): Task => {
     const task = raw as Partial<Task>;
     const title = task.title ?? "Rechenübung";
     const kind: ExerciseKind =
       task.kind ??
       (title.toLowerCase().includes("dreieck")
         ? "triangle"
+        : title.toLowerCase().includes("wörter lesen")
+          ? "read_words"
+          : title.toLowerCase().includes("sätze lesen")
+            ? "read_sentences"
         : title.toLowerCase().includes("plus")
           ? "add"
           : "subtract");
+    const reading = kind === "read_words" || kind === "read_sentences";
     return {
       id: task.id ?? Date.now(),
       title:
@@ -161,16 +196,23 @@ function normalizeTasks(value: unknown): Task[] {
         (title === "Minus über Null" || title === "Minus über den Zehner")
           ? "Minus bis 10"
           : title,
-      subject: task.subject ?? "Mathe",
+      subject: task.subject ?? (reading ? "Deutsch" : "Mathe"),
       goal: task.goal ?? 10,
       min: task.min ?? (kind === "triangle" ? 1 : 0),
       max: kind === "subtract" ? 10 : (task.max ?? 9),
       kind,
+      content: reading ? (task.content ?? "") : undefined,
     };
   });
-  if (!normalized.some((task) => task.kind === "triangle")) {
-    normalized.push(seed[1]);
-  }
+  seed
+    .filter(
+      (seedTask) =>
+        seedTask.kind === "triangle" || isReadingKind(seedTask.kind),
+    )
+    .forEach((seedTask) => {
+      if (!normalized.some((task) => task.kind === seedTask.kind))
+        normalized.push(seedTask);
+    });
   return normalized;
 }
 
@@ -339,31 +381,56 @@ function Admin({
   const [kind, setKind] = useState<ExerciseKind>("subtract");
   const [title, setTitle] = useState("Minus bis 10");
   const [goal, setGoal] = useState(10);
+  const [content, setContent] = useState("");
+
+  const reading = kind === "read_words" || kind === "read_sentences";
 
   function changeKind(value: ExerciseKind) {
     setKind(value);
     setTitle(
       value === "triangle"
         ? "Rechendreiecke"
+        : value === "read_words"
+          ? "Wörter lesen"
+          : value === "read_sentences"
+            ? "Sätze lesen"
         : value === "add"
           ? "Plus bis 20"
           : "Minus bis 10",
+    );
+    setContent(
+      value === "read_words"
+        ? "Haus Sonne Maus Schule Blume Garten Wolke Fenster Kinder Regen"
+        : value === "read_sentences"
+          ? "Der kleine Hund rennt durch den Garten. Mia sieht einen roten Ball. Gemeinsam spielen sie auf der Wiese."
+          : "",
     );
   }
 
   function add(event: FormEvent) {
     event.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || (reading && !content.trim())) return;
+    const readingMode = kind === "read_words" ? "word" : "sentence";
+    const readingGoal = reading
+      ? readingUnits(content, readingMode).length
+      : goal;
     setTasks((current) => [
       ...current,
       {
         id: Date.now(),
         title: title.trim(),
-        subject: "Mathe",
-        goal,
+        subject: reading ? "Deutsch" : "Mathe",
+        goal: readingGoal,
         min: kind === "triangle" ? 1 : 0,
-        max: kind === "triangle" ? 9 : kind === "subtract" ? 10 : 20,
+        max: reading
+          ? 0
+          : kind === "triangle"
+            ? 9
+            : kind === "subtract"
+              ? 10
+              : 20,
         kind,
+        content: reading ? content.trim() : undefined,
       },
     ]);
     setOpen(false);
@@ -375,7 +442,7 @@ function Admin({
         <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="mb-2 text-sm font-extrabold uppercase tracking-[.18em] text-[#5b4ce6]">
-              Klasse 2 · Mathe
+              Klasse 2 · Lernplan
             </p>
             <h1 className="text-3xl font-black tracking-tight sm:text-4xl">
               Was soll Mia üben?
@@ -405,7 +472,9 @@ function Admin({
                   {task.title}
                 </h2>
                 <p className="text-sm text-[#626b86]">
-                  Ziel: {task.goal} richtige Antworten
+                  {isReadingKind(task.kind)
+                    ? `${taskGoal(task)} ${task.kind === "read_words" ? "Wörter" : "Sätze"}`
+                    : `Ziel: ${task.goal} richtige Antworten`}
                 </p>
               </div>
               <Button
@@ -460,6 +529,8 @@ function Admin({
                     </SelectItem>
                     <SelectItem value="add">Plus bis 20</SelectItem>
                     <SelectItem value="triangle">Rechendreiecke</SelectItem>
+                    <SelectItem value="read_words">Wörter lesen</SelectItem>
+                    <SelectItem value="read_sentences">Sätze lesen</SelectItem>
                   </SelectContent>
                 </Select>
               </label>
@@ -471,17 +542,40 @@ function Admin({
                   className="mt-2 h-12 rounded-xl"
                 />
               </label>
-              <label className="mt-5 block text-sm font-bold">
-                Anzahl richtiger Antworten
-                <Input
-                  type="number"
-                  min={1}
-                  max={30}
-                  value={goal}
-                  onChange={(event) => setGoal(Number(event.target.value))}
-                  className="mt-2 h-12 rounded-xl"
-                />
-              </label>
+              {reading ? (
+                <label className="mt-5 block text-sm font-bold">
+                  {kind === "read_words" ? "Wörter" : "Lesetext"}
+                  <Textarea
+                    value={content}
+                    onChange={(event) => setContent(event.target.value)}
+                    placeholder={
+                      kind === "read_words"
+                        ? "Wörter durch Leerzeichen trennen"
+                        : "Mehrere Sätze eingeben"
+                    }
+                    className="mt-2 min-h-32 rounded-xl"
+                  />
+                  <span className="mt-2 block font-medium text-[#7c849f]">
+                    {readingUnits(
+                      content,
+                      kind === "read_words" ? "word" : "sentence",
+                    ).length}{" "}
+                    {kind === "read_words" ? "Wörter" : "Sätze"}
+                  </span>
+                </label>
+              ) : (
+                <label className="mt-5 block text-sm font-bold">
+                  Anzahl richtiger Antworten
+                  <Input
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={goal}
+                    onChange={(event) => setGoal(Number(event.target.value))}
+                    className="mt-2 h-12 rounded-xl"
+                  />
+                </label>
+              )}
               <div className="mt-7 flex justify-end gap-3">
                 <Button
                   type="button"
@@ -506,12 +600,31 @@ function Admin({
 function kindLabel(kind: ExerciseKind) {
   if (kind === "triangle") return "Rechendreieck";
   if (kind === "add") return "Plus";
+  if (kind === "read_words") return "Wörter";
+  if (kind === "read_sentences") return "Sätze";
   return "Minus";
 }
 
+function isReadingKind(kind: ExerciseKind) {
+  return kind === "read_words" || kind === "read_sentences";
+}
+
+function taskGoal(task: Task) {
+  if (!isReadingKind(task.kind)) return task.goal;
+  return (
+    readingUnits(
+      task.content ?? "",
+      task.kind === "read_words" ? "word" : "sentence",
+    ).length || task.goal
+  );
+}
+
 function TaskIcon({ kind }: { kind: ExerciseKind }) {
+  const reading = kind === "read_words" || kind === "read_sentences";
   const styles =
-    kind === "triangle"
+    reading
+      ? "bg-[#ffe4ec] text-[#b52f5d]"
+      : kind === "triangle"
       ? "bg-[#ddf7ed] text-[#13845c]"
       : kind === "add"
         ? "bg-[#fff1cf] text-[#9a6400]"
@@ -520,7 +633,9 @@ function TaskIcon({ kind }: { kind: ExerciseKind }) {
     <div
       className={`grid size-14 shrink-0 place-items-center rounded-2xl ${styles}`}
     >
-      {kind === "triangle" ? (
+      {reading ? (
+        <Languages />
+      ) : kind === "triangle" ? (
         <Shapes />
       ) : kind === "add" ? (
         <Calculator />
@@ -585,24 +700,99 @@ function Student({
   onLogout: () => void;
 }) {
   const [active, setActive] = useState<Task | null>(null);
-  if (active)
+  const [subject, setSubject] = useState<"Mathe" | "Deutsch" | null>(null);
+
+  if (active) {
+    const saveResult = (result: Result) =>
+      setResults((current) => ({ ...current, [active.id]: result }));
+    if (isReadingKind(active.kind)) {
+      return (
+        <ReadingPractice
+          title={active.title}
+          content={active.content ?? ""}
+          mode={active.kind === "read_words" ? "word" : "sentence"}
+          result={results[active.id]}
+          save={saveResult}
+          back={() => setActive(null)}
+        />
+      );
+    }
     return (
       <Practice
         task={active}
         result={results[active.id]}
-        save={(result) =>
-          setResults((current) => ({ ...current, [active.id]: result }))
-        }
+        save={saveResult}
         back={() => setActive(null)}
       />
     );
+  }
+
+  if (!subject) {
+    return (
+      <Shell role="Schülerbereich" onLogout={onLogout}>
+        <div className="mx-auto max-w-6xl p-5 py-10 sm:p-8">
+          <div className="mb-8">
+            <p className="mb-2 text-sm font-extrabold uppercase tracking-[.18em] text-[#5b4ce6]">
+              Hallo Mia 👋
+            </p>
+            <h1 className="text-3xl font-black tracking-tight sm:text-4xl">
+              Was möchtest du üben?
+            </h1>
+            <p className="mt-3 text-[#626b86]">Wähle zuerst ein Fach aus.</p>
+          </div>
+          <div className="grid gap-5 md:grid-cols-2">
+            <button
+              onClick={() => setSubject("Mathe")}
+              className="group rounded-[2rem] border border-[#dfe3f4] bg-white p-7 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
+            >
+              <div className="mb-8 flex items-start justify-between">
+                <div className="grid size-16 place-items-center rounded-2xl bg-[#e5e1ff] text-[#5b4ce6]">
+                  <Calculator size={30} />
+                </div>
+                <div className="grid size-11 place-items-center rounded-full bg-[#f5f7ff] text-[#5b4ce6] transition group-hover:bg-[#5b4ce6] group-hover:text-white">
+                  <ChevronRight />
+                </div>
+              </div>
+              <p className="text-sm font-extrabold uppercase tracking-[.14em] text-[#7c849f]">Klasse 2</p>
+              <h2 className="mt-1 text-3xl font-black">Mathe</h2>
+              <p className="mt-2 text-[#626b86]">Rechnen und Rechendreiecke</p>
+            </button>
+            <button
+              onClick={() => setSubject("Deutsch")}
+              className="group rounded-[2rem] border border-[#dfe3f4] bg-white p-7 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl"
+            >
+              <div className="mb-8 flex items-start justify-between">
+                <div className="grid size-16 place-items-center rounded-2xl bg-[#ffe4ec] text-[#b52f5d]">
+                  <Languages size={30} />
+                </div>
+                <div className="grid size-11 place-items-center rounded-full bg-[#fff3f6] text-[#b52f5d] transition group-hover:bg-[#b52f5d] group-hover:text-white">
+                  <ChevronRight />
+                </div>
+              </div>
+              <p className="text-sm font-extrabold uppercase tracking-[.14em] text-[#7c849f]">Klasse 2</p>
+              <h2 className="mt-1 text-3xl font-black">Deutsch</h2>
+              <p className="mt-2 text-[#626b86]">Wörter und Sätze lesen</p>
+            </button>
+          </div>
+        </div>
+      </Shell>
+    );
+  }
+
+  const subjectTasks = tasks.filter((task) => task.subject === subject);
 
   return (
     <Shell role="Schülerbereich" onLogout={onLogout}>
       <div className="mx-auto max-w-6xl p-5 py-10 sm:p-8">
         <div className="mb-8">
-          <div className="mb-5 inline-flex rounded-full bg-[#e5e1ff] px-4 py-2 text-sm font-extrabold text-[#5b4ce6]">
-            Klasse 2 · Mathe
+          <button
+            onClick={() => setSubject(null)}
+            className="mb-5 font-bold text-[#5b4ce6] hover:text-[#493bc9]"
+          >
+            ← Zur Fächerauswahl
+          </button>
+          <div className={`mb-5 flex w-fit rounded-full px-4 py-2 text-sm font-extrabold ${subject === "Deutsch" ? "bg-[#ffe4ec] text-[#b52f5d]" : "bg-[#e5e1ff] text-[#5b4ce6]"}`}>
+            Klasse 2 · {subject}
           </div>
           <p className="mb-2 text-sm font-extrabold uppercase tracking-[.18em] text-[#5b4ce6]">
             Hallo Mia 👋
@@ -612,11 +802,12 @@ function Student({
           </h1>
         </div>
         <div className="grid gap-5 md:grid-cols-2">
-          {tasks.map((task) => {
+          {subjectTasks.map((task) => {
             const result = results[task.id] ?? { done: 0, correct: 0 };
+            const goal = taskGoal(task);
             const percentage = Math.min(
               100,
-              Math.round((result.correct / task.goal) * 100),
+              Math.round((result.correct / goal) * 100),
             );
             return (
               <button
@@ -647,6 +838,11 @@ function Student({
             );
           })}
         </div>
+        {subjectTasks.length === 0 && (
+          <div className="rounded-[2rem] border border-dashed border-[#cfd4e6] bg-white p-8 text-center text-[#626b86]">
+            Für dieses Fach wurden noch keine Übungen freigegeben.
+          </div>
+        )}
       </div>
     </Shell>
   );
